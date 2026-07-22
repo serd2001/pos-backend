@@ -1,0 +1,166 @@
+// Database schema for the restaurant POS.
+// Every table (except Restaurant) has a restaurantId — that's how multi-tenancy works:
+// one restaurant can NEVER see another restaurant's data.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum OrderStatus {
+  PENDING     // just created, waiting for kitchen
+  PREPARING   // kitchen is cooking
+  SERVED      // delivered to the table
+  PAID        // customer has paid
+  CANCELLED
+}
+
+enum OrderSource {
+  QR     // customer ordered by scanning the QR
+  STAFF  // staff entered it on the POS terminal
+}
+
+enum RequestType {
+  WAITER
+  BILL
+  WATER
+}
+
+// A restaurant = one tenant = one paying customer of your SaaS
+model Restaurant {
+  id        String   @id @default(cuid())
+  name      String
+  bankQrUrl String?  // data URL / hosted URL of the bank transfer QR shown at checkout
+  createdAt DateTime @default(now())
+
+  users           User[]
+  tables          Table[]
+  categories      MenuCategory[]
+  menuItems       MenuItem[]
+  orders          Order[]
+  serviceRequests ServiceRequest[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(STAFF)
+  createdAt    DateTime @default(now())
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+}
+
+model Table {
+  id        String   @id @default(cuid())
+  number    Int      // table number shown to staff and printed on the QR
+  createdAt DateTime @default(now())
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+
+  orders          Order[]
+  serviceRequests ServiceRequest[]
+
+  @@unique([restaurantId, number])
+}
+
+model MenuCategory {
+  id       String @id @default(cuid())
+  name     String
+  sortOrder Int   @default(0)
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+
+  items MenuItem[]
+}
+
+model MenuItem {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  price       Int     // stored in whole kip (LAK has no subunit in use)
+  cost        Int      @default(0) // wholesale/prep cost in whole kip; profit = price - cost
+  available   Boolean @default(true)
+  imageUrl    String?  // data URL or hosted URL for the item photo
+  createdAt   DateTime @default(now())
+  // modifiers = optional choices, stored as JSON, e.g.
+  // [{ "name": "Size", "options": [{ "label": "Large", "price": 1000 }] }]
+  modifiers   Json?
+
+  category   MenuCategory @relation(fields: [categoryId], references: [id])
+  categoryId String
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+
+  orderItems OrderItem[]
+}
+
+model Order {
+  id        String      @id @default(cuid())
+  status    OrderStatus @default(PENDING)
+  source    OrderSource @default(QR)
+  note      String?     // customer's message to the kitchen ("no chili", ...)
+  createdAt DateTime    @default(now())
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+
+  table   Table  @relation(fields: [tableId], references: [id])
+  tableId String
+
+  items   OrderItem[]
+  payment Payment?
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  quantity  Int    @default(1)
+  unitPrice Int    // price at the moment of ordering (menu prices can change later)
+  // selected modifiers for this line, stored as JSON
+  selected  Json?
+
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String
+
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  menuItemId String
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  amount    Int      // total charged
+  provider  String   @default("stripe")
+  reference String?  // Stripe PaymentIntent id
+  paidAt    DateTime @default(now())
+
+  order   Order  @relation(fields: [orderId], references: [id])
+  orderId String @unique
+}
+
+model ServiceRequest {
+  id        String      @id @default(cuid())
+  type      RequestType
+  handled   Boolean     @default(false)
+  createdAt DateTime    @default(now())
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+
+  table   Table  @relation(fields: [tableId], references: [id])
+  tableId String
+}

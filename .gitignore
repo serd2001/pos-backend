@@ -1,0 +1,12 @@
+# dependencies (Render reinstalls these)
+node_modules/
+
+# env file with secrets — DATABASE_URL, JWT_SECRET, Stripe key
+# (keep .env.example tracked)
+.env
+.env.local
+
+# logs / os / editor
+*.log
+.DS_Store
+.vscode/
