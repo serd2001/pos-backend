@@ -5,21 +5,24 @@ import { emitToRestaurant } from "../socket.js";
 
 const router = Router();
 
-// Simple in-memory cooldown so a customer can't spam the button.
+// Short in-memory cooldown so an accidental double-tap doesn't spam staff.
+// Keyed per table AND per type, so a customer can still ask for water and then
+// the bill back-to-back, and can re-call the same thing after a few seconds.
 // (For production, use Redis so it works across multiple servers.)
-const lastCall = new Map(); // key: tableId -> timestamp
-const COOLDOWN_MS = 30_000;
+const lastCall = new Map(); // key: `${tableId}:${type}` -> timestamp
+const COOLDOWN_MS = 8_000;
 
 // PUBLIC: customer taps "call staff" on their phone (no login).
 router.post("/public", async (req, res) => {
   const { restaurantId, tableId, type } = req.body;
 
   const now = Date.now();
-  const previous = lastCall.get(tableId) || 0;
+  const key = `${tableId}:${type}`;
+  const previous = lastCall.get(key) || 0;
   if (now - previous < COOLDOWN_MS) {
     return res.status(429).json({ error: "Please wait a moment before calling again" });
   }
-  lastCall.set(tableId, now);
+  lastCall.set(key, now);
 
   const request = await prisma.serviceRequest.create({
     data: { restaurantId, tableId, type }, // type: WAITER | BILL | WATER
