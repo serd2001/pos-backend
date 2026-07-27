@@ -1,17 +1,28 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { rateLimit } from "../middleware/rateLimit.js";
+import { validate } from "../middleware/validate.js";
 
 const router = Router();
 
+const signupSchema = z.object({
+  restaurantName: z.string().min(1, "Restaurant name is required").max(120),
+  name: z.string().max(120).optional(),
+  email: z.string().email("Enter a valid email"),
+  password: z.string().min(6, "Password must be at least 6 characters").max(200),
+});
+const loginSchema = z.object({
+  email: z.string().email("Enter a valid email"),
+  password: z.string().min(1, "Password is required"),
+});
+
 // Sign up = create a new restaurant (tenant) + its first owner account.
-router.post("/signup", async (req, res) => {
+router.post("/signup", rateLimit({ max: 5 }), validate(signupSchema), async (req, res) => {
   const { restaurantName, name, email, password } = req.body;
-  if (!restaurantName || !email || !password) {
-    return res.status(400).json({ error: "Missing required fields" });
-  }
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return res.status(409).json({ error: "Email already in use" });
@@ -34,7 +45,8 @@ router.post("/signup", async (req, res) => {
   res.json({ token, user: publicUser(user), restaurant: { id: restaurant.id, name: restaurant.name } });
 });
 
-router.post("/login", async (req, res) => {
+// Rate-limited to slow down password-guessing (brute force).
+router.post("/login", rateLimit({ max: 10 }), validate(loginSchema), async (req, res) => {
   const { email, password } = req.body;
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) return res.status(401).json({ error: "Wrong email or password" });

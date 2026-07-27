@@ -1,13 +1,22 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { rateLimit } from "../middleware/rateLimit.js";
+import { validate } from "../middleware/validate.js";
 import { emitToRestaurant } from "../socket.js";
 
 const router = Router();
 
+const serviceSchema = z.object({
+  restaurantId: z.string().min(1),
+  tableId: z.string().min(1),
+  type: z.enum(["WAITER", "BILL", "WATER"]),
+});
+
 // PUBLIC: customer taps "call staff" on their phone (no login).
-// No cooldown — customers can call as many times as they want.
-router.post("/public", async (req, res) => {
+// Rate-limited per IP so the button can't be scripted to flood the kitchen.
+router.post("/public", rateLimit({ max: 20 }), validate(serviceSchema), async (req, res) => {
   const { restaurantId, tableId, type } = req.body;
 
   const request = await prisma.serviceRequest.create({

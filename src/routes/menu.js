@@ -1,8 +1,24 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
 
 const router = Router();
+
+const itemCreateSchema = z.object({
+  name: z.string().min(1, "Name is required").max(200),
+  categoryId: z.string().min(1, "Category is required"),
+  description: z.string().max(1000).nullable().optional(),
+  price: z.number().int().nonnegative("Price must be 0 or more"),
+  cost: z.number().int().nonnegative().optional(),
+  imageUrl: z.string().max(4_000_000).nullable().optional(),
+  available: z.boolean().optional(),
+  modifiers: z.any().optional(),
+});
+// PATCH allows any subset; unknown keys are stripped by zod (so a client can't
+// slip in fields like restaurantId).
+const itemUpdateSchema = itemCreateSchema.partial();
 
 // PUBLIC: the customer's phone loads the menu for a restaurant (no login).
 // Only available items are returned.
@@ -69,7 +85,7 @@ router.delete("/categories/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/items", async (req, res) => {
+router.post("/items", validate(itemCreateSchema), async (req, res) => {
   const { name, description, price, cost, categoryId, modifiers, imageUrl, available } = req.body;
   const item = await prisma.menuItem.create({
     data: {
@@ -87,7 +103,7 @@ router.post("/items", async (req, res) => {
   res.json(item);
 });
 
-router.patch("/items/:id", async (req, res) => {
+router.patch("/items/:id", validate(itemUpdateSchema), async (req, res) => {
   const { id } = req.params;
   // Make sure the item belongs to this restaurant before updating.
   const existing = await prisma.menuItem.findFirst({

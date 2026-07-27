@@ -12,6 +12,7 @@ import serviceRoutes from "./routes/serviceRequests.js";
 import paymentRoutes from "./routes/payments.js";
 import restaurantRoutes from "./routes/restaurant.js";
 import reportRoutes from "./routes/reports.js";
+import userRoutes from "./routes/users.js";
 
 // FRONTEND_URL may be a comma-separated list (e.g. the Vercel URL + localhost).
 const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173")
@@ -34,6 +35,7 @@ app.use("/api/service-requests", serviceRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/restaurant", restaurantRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/users", userRoutes);
 
 // Wrap Express in an HTTP server so Socket.io can share the same port.
 const httpServer = createServer(app);

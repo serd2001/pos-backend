@@ -1,9 +1,46 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { rateLimit } from "../middleware/rateLimit.js";
+import { validate } from "../middleware/validate.js";
 import { emitToRestaurant } from "../socket.js";
 
 const router = Router();
+
+const cartItemSchema = z.object({
+  menuItemId: z.string().min(1),
+  quantity: z.number().int().positive().max(99).optional(),
+  selected: z.array(z.any()).optional(),
+});
+const publicOrderSchema = z.object({
+  restaurantId: z.string().min(1),
+  tableId: z.string().min(1),
+  cart: z.array(cartItemSchema).min(1, "Your cart is empty"),
+  note: z.string().max(500).optional(),
+});
+const staffOrderSchema = z.object({
+  tableId: z.string().min(1),
+  cart: z.array(cartItemSchema).min(1, "Your cart is empty"),
+  note: z.string().max(500).optional(),
+  payment: z.object({ method: z.string().max(30) }).optional(),
+});
+const statusSchema = z.object({
+  status: z.enum(["PENDING", "PREPARING", "SERVED", "PAID", "CANCELLED"]),
+});
+// Correcting a closed order: the client sends the desired quantity for each
+// existing line (0 = remove it). We never re-price — we keep each line's
+// locked-in unitPrice and only change quantities.
+const correctSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        orderItemId: z.string().min(1),
+        quantity: z.number().int().min(0).max(99),
+      })
+    )
+    .min(1, "Nothing to update"),
+});
 
 // Helper: build an order from a list of { menuItemId, quantity, selected }.
 // Prices are read from the database (never trust prices sent by the client).
@@ -53,7 +90,7 @@ async function buildOrder({ restaurantId, tableId, source, cart, note, payment }
 
 // PUBLIC: customer places an order by scanning the QR (no login).
 // The QR URL gives us restaurantId + tableId.
-router.post("/public", async (req, res) => {
+router.post("/public", rateLimit({ max: 30 }), validate(publicOrderSchema), async (req, res) => {
   const { restaurantId, tableId, cart, note } = req.body;
   try {
     const order = await buildOrder({ restaurantId, tableId, source: "QR", cart, note });
@@ -108,7 +145,7 @@ router.get("/public/:orderId", async (req, res) => {
 });
 
 // Staff creates an order from the POS terminal.
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", requireAuth, validate(staffOrderSchema), async (req, res) => {
   const { tableId, cart, note, payment } = req.body;
   try {
     const order = await buildOrder({
@@ -144,7 +181,7 @@ router.get("/", requireAuth, async (req, res) => {
 });
 
 // Update an order's status (e.g. kitchen marks it PREPARING, then SERVED).
-router.patch("/:id/status", requireAuth, async (req, res) => {
+router.patch("/:id/status", requireAuth, validate(statusSchema), async (req, res) => {
   const { id } = req.params;
   let { status } = req.body;
 
@@ -166,5 +203,66 @@ router.patch("/:id/status", requireAuth, async (req, res) => {
   emitToRestaurant(req.user.restaurantId, "order:updated", order);
   res.json(order);
 });
+
+// Correct a closed order (owner only). Used when staff notice a mistake after
+// the customer paid — e.g. an item that wasn't theirs. Reports recompute from
+// the fixed lines, and any recorded payment amount is updated to match.
+router.patch(
+  "/:id/items",
+  requireAuth,
+  requireRole("OWNER"),
+  validate(correctSchema),
+  async (req, res) => {
+    const { id } = req.params;
+    const { items } = req.body;
+
+    const existing = await prisma.order.findFirst({
+      where: { id, restaurantId: req.user.restaurantId },
+      include: { items: true, payment: true },
+    });
+    if (!existing) return res.status(404).json({ error: "Order not found" });
+
+    // Requested quantities keyed by order-item id. Any line not mentioned keeps
+    // its current quantity; ids that don't belong to this order are ignored.
+    const requested = new Map(items.map((l) => [l.orderItemId, l.quantity]));
+    const deletes = [];
+    const updates = [];
+    let newTotal = 0;
+    for (const it of existing.items) {
+      const qty = requested.has(it.id) ? requested.get(it.id) : it.quantity;
+      if (qty <= 0) {
+        deletes.push(it.id);
+        continue;
+      }
+      if (qty !== it.quantity) updates.push({ id: it.id, quantity: qty });
+      newTotal += it.unitPrice * qty;
+    }
+
+    // An order must keep at least one item — removing everything is a cancel.
+    if (existing.items.length - deletes.length <= 0) {
+      return res
+        .status(400)
+        .json({ error: "An order must keep at least one item — cancel it instead" });
+    }
+
+    await prisma.$transaction([
+      ...deletes.map((itemId) => prisma.orderItem.delete({ where: { id: itemId } })),
+      ...updates.map((u) =>
+        prisma.orderItem.update({ where: { id: u.id }, data: { quantity: u.quantity } })
+      ),
+      ...(existing.payment
+        ? [prisma.payment.update({ where: { id: existing.payment.id }, data: { amount: newTotal } })]
+        : []),
+    ]);
+
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: { items: { include: { menuItem: true } }, table: true, payment: true },
+    });
+
+    emitToRestaurant(req.user.restaurantId, "order:updated", order);
+    res.json(order);
+  }
+);
 
 export default router;
