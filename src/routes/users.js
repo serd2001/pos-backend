@@ -16,6 +16,9 @@ const createSchema = z.object({
   password: z.string().min(6, "Password must be at least 6 characters").max(200),
   role: z.enum(["MANAGER", "STAFF"]).default("STAFF"),
 });
+const resetPasswordSchema = z.object({
+  password: z.string().min(6, "Password must be at least 6 characters").max(200),
+});
 
 const publicUser = (u) => ({
   id: u.id,
@@ -45,6 +48,19 @@ router.post("/", validate(createSchema), async (req, res) => {
     data: { name, email, passwordHash, role, restaurantId: req.user.restaurantId },
   });
   res.json(publicUser(user));
+});
+
+// Reset a staff member's password (owner does this when they forget theirs).
+router.patch("/:id/password", validate(resetPasswordSchema), async (req, res) => {
+  const { id } = req.params;
+  const target = await prisma.user.findFirst({
+    where: { id, restaurantId: req.user.restaurantId },
+  });
+  if (!target) return res.status(404).json({ error: "User not found" });
+
+  const passwordHash = await bcrypt.hash(req.body.password, 10);
+  await prisma.user.update({ where: { id }, data: { passwordHash } });
+  res.json({ ok: true });
 });
 
 // Remove a staff account (never yourself or another owner).

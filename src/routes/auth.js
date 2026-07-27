@@ -19,6 +19,10 @@ const loginSchema = z.object({
   email: z.string().email("Enter a valid email"),
   password: z.string().min(1, "Password is required"),
 });
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Enter your current password"),
+  newPassword: z.string().min(6, "New password must be at least 6 characters").max(200),
+});
 
 // Sign up = create a new restaurant (tenant) + its first owner account.
 router.post("/signup", rateLimit({ max: 5 }), validate(signupSchema), async (req, res) => {
@@ -64,6 +68,27 @@ router.get("/me", requireAuth, async (req, res) => {
   if (!user) return res.status(404).json({ error: "User not found" });
   res.json(publicUser(user));
 });
+
+// Change your own password. Requires the current password so a stolen/lent
+// session can't silently lock you out. Rate-limited against guessing.
+router.post(
+  "/change-password",
+  requireAuth,
+  rateLimit({ max: 10 }),
+  validate(changePasswordSchema),
+  async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const user = await prisma.user.findUnique({ where: { id: req.user.userId } });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!ok) return res.status(400).json({ error: "Current password is wrong" });
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    res.json({ ok: true });
+  }
+);
 
 function signToken(user) {
   return jwt.sign(
