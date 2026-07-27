@@ -13,7 +13,6 @@ import paymentRoutes from "./routes/payments.js";
 import restaurantRoutes from "./routes/restaurant.js";
 import reportRoutes from "./routes/reports.js";
 import userRoutes from "./routes/users.js";
-import migrateRoutes from "./routes/_migrate.js"; // TEMPORARY — remove after Neon migration
 
 // FRONTEND_URL may be a comma-separated list (e.g. the Vercel URL + localhost).
 const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:5173")
@@ -37,7 +36,6 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/restaurant", restaurantRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/users", userRoutes);
-app.use("/api/_migrate", migrateRoutes); // TEMPORARY — remove after Neon migration
 
 // Wrap Express in an HTTP server so Socket.io can share the same port.
 const httpServer = createServer(app);
