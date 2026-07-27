@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
 import { emitToRestaurant } from "../socket.js";
 
 // Order statuses that mean "the table still owes money".
@@ -9,6 +11,34 @@ const ACTIVE = ["PENDING", "PREPARING", "SERVED"];
 function orderTotal(order) {
   return order.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
 }
+
+// Split `total` across buckets in proportion to `weights` (integer kip; any
+// rounding remainder is handed out one kip at a time). Used to spread a
+// whole-bill discount back onto its individual orders.
+function distribute(total, weights) {
+  const sum = weights.reduce((s, w) => s + w, 0);
+  if (sum <= 0 || total <= 0) return weights.map(() => 0);
+  const out = weights.map((w) => Math.floor((total * w) / sum));
+  let assigned = out.reduce((s, x) => s + x, 0);
+  let i = 0;
+  while (assigned < total) {
+    out[i % out.length] += 1;
+    assigned += 1;
+    i += 1;
+  }
+  return out;
+}
+
+const paymentLineSchema = z.object({
+  method: z.string().min(1).max(30),
+  amount: z.number().int().positive(),
+  received: z.number().int().nonnegative().optional(),
+  change: z.number().int().nonnegative().optional(),
+});
+const checkoutSchema = z.object({
+  discount: z.number().int().nonnegative().optional(),
+  payments: z.array(paymentLineSchema).optional(),
+});
 
 const router = Router();
 
@@ -40,7 +70,7 @@ router.get("/", async (req, res) => {
       orders: {
         where: { status: { in: ACTIVE } },
         select: {
-          payment: { select: { id: true } },
+          payments: { select: { id: true } },
           items: { select: { unitPrice: true, quantity: true } },
         },
       },
@@ -52,7 +82,7 @@ router.get("/", async (req, res) => {
     ...t,
     activeOrders: orders.length,
     activeTotal: orders
-      .filter((o) => !o.payment)
+      .filter((o) => o.payments.length === 0)
       .reduce((s, o) => s + orderTotal(o), 0),
     qrUrl: `${process.env.FRONTEND_URL}/order/${req.user.restaurantId}/${t.id}`,
   }));
@@ -68,7 +98,7 @@ router.get("/:id/bill", async (req, res) => {
 
   // Only orders that still owe money — counter orders were paid up front.
   const orders = await prisma.order.findMany({
-    where: { tableId: table.id, status: { in: ACTIVE }, payment: null },
+    where: { tableId: table.id, status: { in: ACTIVE }, payments: { none: {} } },
     orderBy: { createdAt: "asc" },
     include: { items: { include: { menuItem: true } }, table: true },
   });
@@ -80,31 +110,70 @@ router.get("/:id/bill", async (req, res) => {
   });
 });
 
-// Close the table: mark ALL its active orders paid in one transaction.
-router.post("/:id/checkout", async (req, res) => {
+// Close the table: mark ALL its active unpaid orders paid in one transaction,
+// applying an optional whole-bill discount and recording the (possibly split)
+// payment lines so the end-of-day cash-up is accurate.
+router.post("/:id/checkout", validate(checkoutSchema), async (req, res) => {
   const table = await prisma.table.findFirst({
     where: { id: req.params.id, restaurantId: req.user.restaurantId },
   });
   if (!table) return res.status(404).json({ error: "Table not found" });
 
   const orders = await prisma.order.findMany({
-    where: { tableId: table.id, status: { in: ACTIVE } },
-    include: { items: { include: { menuItem: true } }, table: true },
+    where: { tableId: table.id, status: { in: ACTIVE }, payments: { none: {} } },
+    orderBy: { createdAt: "asc" },
+    include: { items: true },
   });
   if (orders.length === 0) return res.json({ count: 0, total: 0 });
 
-  await prisma.$transaction(
-    orders.map((o) =>
-      prisma.order.update({ where: { id: o.id }, data: { status: "PAID" } })
-    )
-  );
+  const billTotal = orders.reduce((s, o) => s + orderTotal(o), 0);
+  const disc = Math.min(Math.max(0, Math.round(req.body.discount) || 0), billTotal);
+  const net = billTotal - disc;
 
-  // Tell every live screen (kitchen, orders board, the customer's phone).
-  for (const o of orders) {
-    emitToRestaurant(req.user.restaurantId, "order:updated", { ...o, status: "PAID" });
+  const payments = req.body.payments;
+  if (Array.isArray(payments) && payments.length > 0) {
+    const paid = payments.reduce((s, p) => s + p.amount, 0);
+    if (paid !== net) {
+      return res.status(400).json({ error: "Payments must add up to the amount due" });
+    }
   }
 
-  res.json({ count: orders.length, total: orders.reduce((s, o) => s + orderTotal(o), 0) });
+  // Spread the discount back onto each order by its share of the bill.
+  const discByOrder = distribute(disc, orders.map((o) => orderTotal(o)));
+
+  const tx = orders.map((o, i) =>
+    prisma.order.update({
+      where: { id: o.id },
+      data: { status: "PAID", discount: discByOrder[i] },
+    })
+  );
+  // Attach the payment lines to the first order (reports total them globally).
+  if (Array.isArray(payments) && payments.length > 0) {
+    for (const p of payments) {
+      tx.push(
+        prisma.payment.create({
+          data: {
+            orderId: orders[0].id,
+            amount: p.amount,
+            provider: String(p.method || "cash").toLowerCase(),
+            received: p.received ?? null,
+            change: p.change ?? null,
+          },
+        })
+      );
+    }
+  }
+
+  await prisma.$transaction(tx);
+
+  // Tell every live screen (kitchen, orders board, the customer's phone).
+  const updated = await prisma.order.findMany({
+    where: { id: { in: orders.map((o) => o.id) } },
+    include: { items: { include: { menuItem: true } }, table: true, payments: true },
+  });
+  for (const o of updated) emitToRestaurant(req.user.restaurantId, "order:updated", o);
+
+  res.json({ count: orders.length, total: billTotal, discount: disc, net });
 });
 
 router.post("/", async (req, res) => {

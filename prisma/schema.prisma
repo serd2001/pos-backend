@@ -115,6 +115,7 @@ model Order {
   status    OrderStatus @default(PENDING)
   source    OrderSource @default(QR)
   note      String?     // customer's message to the kitchen ("no chili", ...)
+  discount  Int         @default(0) // whole-kip discount applied at checkout
   createdAt DateTime    @default(now())
 
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
@@ -123,8 +124,8 @@ model Order {
   table   Table  @relation(fields: [tableId], references: [id])
   tableId String
 
-  items   OrderItem[]
-  payment Payment?
+  items    OrderItem[]
+  payments Payment[] // a bill can be settled with several payments (split)
 }
 
 model OrderItem {
@@ -143,13 +144,15 @@ model OrderItem {
 
 model Payment {
   id        String   @id @default(cuid())
-  amount    Int      // total charged
-  provider  String   @default("stripe")
-  reference String?  // Stripe PaymentIntent id
+  amount    Int      // kip this payment line covers
+  provider  String   @default("cash") // method: cash | transfer | bank_qr | ...
+  received  Int?     // cash tendered by the customer (cash payments only)
+  change    Int?     // change handed back (cash payments only)
+  reference String?  // e.g. Stripe PaymentIntent id
   paidAt    DateTime @default(now())
 
   order   Order  @relation(fields: [orderId], references: [id])
-  orderId String @unique
+  orderId String // NOT unique — an order/bill can have several payment lines
 }
 
 model ServiceRequest {

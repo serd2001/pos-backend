@@ -8,10 +8,25 @@ import { emitToRestaurant } from "../socket.js";
 
 const router = Router();
 
+// Everything the staff screens need to render an order.
+const orderInclude = {
+  items: { include: { menuItem: true } },
+  table: true,
+  payments: true,
+};
+
 const cartItemSchema = z.object({
   menuItemId: z.string().min(1),
   quantity: z.number().int().positive().max(99).optional(),
   selected: z.array(z.any()).optional(),
+});
+// One line of a (possibly split) payment. `amount` is what this method covers;
+// for cash, `received`/`change` record what was handed over and given back.
+const paymentLineSchema = z.object({
+  method: z.string().min(1).max(30),
+  amount: z.number().int().positive(),
+  received: z.number().int().nonnegative().optional(),
+  change: z.number().int().nonnegative().optional(),
 });
 const publicOrderSchema = z.object({
   restaurantId: z.string().min(1),
@@ -23,7 +38,8 @@ const staffOrderSchema = z.object({
   tableId: z.string().min(1),
   cart: z.array(cartItemSchema).min(1, "Your cart is empty"),
   note: z.string().max(500).optional(),
-  payment: z.object({ method: z.string().max(30) }).optional(),
+  discount: z.number().int().nonnegative().optional(),
+  payments: z.array(paymentLineSchema).optional(),
 });
 const statusSchema = z.object({
   status: z.enum(["PENDING", "PREPARING", "SERVED", "PAID", "CANCELLED"]),
@@ -44,9 +60,9 @@ const correctSchema = z.object({
 
 // Helper: build an order from a list of { menuItemId, quantity, selected }.
 // Prices are read from the database (never trust prices sent by the client).
-// `payment` ({ method }) is set when the customer paid up front at the counter —
-// a Payment row is created together with the order.
-async function buildOrder({ restaurantId, tableId, source, cart, note, payment }) {
+// `discount` (whole kip) and `payments` (split lines) are set when staff take
+// payment up front at the counter — Payment rows are created with the order.
+async function buildOrder({ restaurantId, tableId, source, cart, note, discount = 0, payments }) {
   const itemIds = cart.map((c) => c.menuItemId);
   const menuItems = await prisma.menuItem.findMany({
     where: { id: { in: itemIds }, restaurantId },
@@ -71,6 +87,23 @@ async function buildOrder({ restaurantId, tableId, source, cart, note, payment }
   });
 
   const total = orderItems.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+  const disc = Math.min(Math.max(0, Math.round(discount) || 0), total);
+  const net = total - disc;
+
+  // If payment lines were sent, they must add up to exactly what's due.
+  let paymentsCreate;
+  if (Array.isArray(payments) && payments.length > 0) {
+    const paid = payments.reduce((s, p) => s + p.amount, 0);
+    if (paid !== net) throw new Error("Payments must add up to the amount due");
+    paymentsCreate = {
+      create: payments.map((p) => ({
+        amount: p.amount,
+        provider: String(p.method || "cash").toLowerCase(),
+        received: p.received ?? null,
+        change: p.change ?? null,
+      })),
+    };
+  }
 
   return prisma.order.create({
     data: {
@@ -78,13 +111,11 @@ async function buildOrder({ restaurantId, tableId, source, cart, note, payment }
       tableId,
       source,
       note: typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null,
+      discount: disc,
       items: { create: orderItems },
-      // Paid at the counter: record it now; the kitchen still cooks the order.
-      payment: payment
-        ? { create: { amount: total, provider: String(payment.method || "cash").toLowerCase() } }
-        : undefined,
+      payments: paymentsCreate,
     },
-    include: { items: { include: { menuItem: true } }, table: true, payment: true },
+    include: orderInclude,
   });
 }
 
@@ -108,7 +139,7 @@ const publicOrderSelect = {
   status: true,
   note: true,
   createdAt: true,
-  payment: { select: { id: true, provider: true } },
+  payments: { select: { id: true, provider: true } },
   table: { select: { number: true } },
   items: {
     select: {
@@ -146,7 +177,7 @@ router.get("/public/:orderId", async (req, res) => {
 
 // Staff creates an order from the POS terminal.
 router.post("/", requireAuth, validate(staffOrderSchema), async (req, res) => {
-  const { tableId, cart, note, payment } = req.body;
+  const { tableId, cart, note, discount, payments } = req.body;
   try {
     const order = await buildOrder({
       restaurantId: req.user.restaurantId,
@@ -154,7 +185,8 @@ router.post("/", requireAuth, validate(staffOrderSchema), async (req, res) => {
       source: "STAFF",
       cart,
       note,
-      payment,
+      discount,
+      payments,
     });
     emitToRestaurant(req.user.restaurantId, "order:new", order);
     res.json(order);
@@ -175,7 +207,7 @@ router.get("/", requireAuth, async (req, res) => {
     },
     orderBy: { createdAt: done ? "desc" : "asc" },
     ...(done ? { take: 100 } : {}),
-    include: { items: { include: { menuItem: true } }, table: true, payment: true },
+    include: orderInclude,
   });
   res.json(orders);
 });
@@ -187,17 +219,17 @@ router.patch("/:id/status", requireAuth, validate(statusSchema), async (req, res
 
   const existing = await prisma.order.findFirst({
     where: { id, restaurantId: req.user.restaurantId },
-    include: { payment: true },
+    include: { payments: true },
   });
   if (!existing) return res.status(404).json({ error: "Order not found" });
 
   // Counter orders are paid up front — once served, they're fully closed.
-  if (status === "SERVED" && existing.payment) status = "PAID";
+  if (status === "SERVED" && existing.payments.length > 0) status = "PAID";
 
   const order = await prisma.order.update({
     where: { id },
     data: { status },
-    include: { items: { include: { menuItem: true } }, table: true, payment: true },
+    include: orderInclude,
   });
 
   emitToRestaurant(req.user.restaurantId, "order:updated", order);
@@ -206,7 +238,7 @@ router.patch("/:id/status", requireAuth, validate(statusSchema), async (req, res
 
 // Correct a closed order (owner only). Used when staff notice a mistake after
 // the customer paid — e.g. an item that wasn't theirs. Reports recompute from
-// the fixed lines, and any recorded payment amount is updated to match.
+// the fixed lines; a single recorded payment is kept in sync with the new total.
 router.patch(
   "/:id/items",
   requireAuth,
@@ -218,7 +250,7 @@ router.patch(
 
     const existing = await prisma.order.findFirst({
       where: { id, restaurantId: req.user.restaurantId },
-      include: { items: true, payment: true },
+      include: { items: true, payments: true },
     });
     if (!existing) return res.status(404).json({ error: "Order not found" });
 
@@ -245,20 +277,21 @@ router.patch(
         .json({ error: "An order must keep at least one item — cancel it instead" });
     }
 
+    // Keep a single payment in sync with the corrected (discounted) total.
+    // Split payments are left alone — the owner refunds the difference by hand.
+    const newNet = Math.max(0, newTotal - (existing.discount || 0));
+
     await prisma.$transaction([
       ...deletes.map((itemId) => prisma.orderItem.delete({ where: { id: itemId } })),
       ...updates.map((u) =>
         prisma.orderItem.update({ where: { id: u.id }, data: { quantity: u.quantity } })
       ),
-      ...(existing.payment
-        ? [prisma.payment.update({ where: { id: existing.payment.id }, data: { amount: newTotal } })]
+      ...(existing.payments.length === 1
+        ? [prisma.payment.update({ where: { id: existing.payments[0].id }, data: { amount: newNet } })]
         : []),
     ]);
 
-    const order = await prisma.order.findUnique({
-      where: { id },
-      include: { items: { include: { menuItem: true } }, table: true, payment: true },
-    });
+    const order = await prisma.order.findUnique({ where: { id }, include: orderInclude });
 
     emitToRestaurant(req.user.restaurantId, "order:updated", order);
     res.json(order);

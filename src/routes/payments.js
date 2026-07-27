@@ -56,7 +56,7 @@ router.post("/order/:orderId/confirm", async (req, res) => {
   const amount = orderTotal(order);
 
   await prisma.$transaction([
-    prisma.payment.create({ data: { orderId, amount } }),
+    prisma.payment.create({ data: { orderId, amount, provider: "card" } }),
     prisma.order.update({ where: { id: orderId }, data: { status: "PAID" } }),
   ]);
 
