@@ -175,6 +175,30 @@ router.get("/public/:orderId", async (req, res) => {
   res.json(order);
 });
 
+// PUBLIC: how far this order is from being cooked — its place in the kitchen
+// queue. "ahead" = orders for the same restaurant still waiting/cooking that
+// came in earlier. Only meaningful while the order itself is PENDING/PREPARING.
+router.get("/public/:orderId/queue", async (req, res) => {
+  const order = await prisma.order.findUnique({
+    where: { id: req.params.orderId },
+    select: { status: true, createdAt: true, restaurantId: true },
+  });
+  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  if (order.status !== "PENDING" && order.status !== "PREPARING") {
+    return res.json({ status: order.status, ahead: 0, position: 0 });
+  }
+
+  const ahead = await prisma.order.count({
+    where: {
+      restaurantId: order.restaurantId,
+      status: { in: ["PENDING", "PREPARING"] },
+      createdAt: { lt: order.createdAt },
+    },
+  });
+  res.json({ status: order.status, ahead, position: ahead + 1 });
+});
+
 // Staff creates an order from the POS terminal.
 router.post("/", requireAuth, validate(staffOrderSchema), async (req, res) => {
   const { tableId, cart, note, discount, payments } = req.body;
