@@ -1,0 +1,31 @@
+name: CI
+
+# Render deploys the backend automatically on push to main. This job is the
+# safety net: it checks that the code installs, the Prisma client generates,
+# and every file parses — so a broken commit shows a red X instead of shipping.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Syntax check
+        run: |
+          node --check src/server.js
+          for f in src/routes/*.js src/middleware/*.js; do node --check "$f"; done
