@@ -34,6 +34,34 @@ router.get("/public/:restaurantId", async (req, res) => {
   res.json(categories);
 });
 
+// PUBLIC: the customer's "Popular" section — the best-selling available items,
+// ranked by total quantity ordered (cancelled orders excluded).
+router.get("/public/:restaurantId/popular", async (req, res) => {
+  const { restaurantId } = req.params;
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 5, 1), 10);
+
+  const grouped = await prisma.orderItem.groupBy({
+    by: ["menuItemId"],
+    where: {
+      order: { restaurantId, status: { not: "CANCELLED" } },
+      menuItem: { restaurantId, available: true },
+    },
+    _sum: { quantity: true },
+    orderBy: { _sum: { quantity: "desc" } },
+    take: limit,
+  });
+
+  const ids = grouped.map((g) => g.menuItemId);
+  if (ids.length === 0) return res.json([]);
+
+  const items = await prisma.menuItem.findMany({
+    where: { id: { in: ids }, restaurantId, available: true },
+  });
+  // Keep them in popularity order (groupBy order is lost by findMany).
+  const byId = new Map(items.map((i) => [i.id, i]));
+  res.json(ids.map((id) => byId.get(id)).filter(Boolean));
+});
+
 // Everything below needs a logged-in staff/owner account.
 router.use(requireAuth);
 
