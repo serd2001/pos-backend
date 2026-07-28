@@ -95,6 +95,7 @@ model MenuItem {
   price       Int     // stored in whole kip (LAK has no subunit in use)
   cost        Int      @default(0) // wholesale/prep cost in whole kip; profit = price - cost
   available   Boolean @default(true)
+  recommended Boolean @default(false) // owner's "chef's recommends" pick, shown to customers
   imageUrl    String?  // data URL or hosted URL for the item photo
   createdAt   DateTime @default(now())
   // modifiers = optional choices, stored as JSON, e.g.

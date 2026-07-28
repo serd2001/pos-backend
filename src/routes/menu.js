@@ -14,6 +14,7 @@ const itemCreateSchema = z.object({
   cost: z.number().int().nonnegative().optional(),
   imageUrl: z.string().max(4_000_000).nullable().optional(),
   available: z.boolean().optional(),
+  recommended: z.boolean().optional(),
   modifiers: z.any().optional(),
 });
 // PATCH allows any subset; unknown keys are stripped by zod (so a client can't
@@ -114,7 +115,8 @@ router.delete("/categories/:id", async (req, res) => {
 });
 
 router.post("/items", validate(itemCreateSchema), async (req, res) => {
-  const { name, description, price, cost, categoryId, modifiers, imageUrl, available } = req.body;
+  const { name, description, price, cost, categoryId, modifiers, imageUrl, available, recommended } =
+    req.body;
   const item = await prisma.menuItem.create({
     data: {
       name,
@@ -123,6 +125,7 @@ router.post("/items", validate(itemCreateSchema), async (req, res) => {
       cost: cost ?? 0,
       imageUrl: imageUrl ?? null,
       available: available ?? true,
+      recommended: recommended ?? false,
       categoryId,
       modifiers: modifiers ?? undefined,
       restaurantId: req.user.restaurantId,
