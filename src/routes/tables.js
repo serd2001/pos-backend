@@ -39,6 +39,9 @@ const checkoutSchema = z.object({
   discount: z.number().int().nonnegative().optional(),
   payments: z.array(paymentLineSchema).optional(),
 });
+const moveSchema = z.object({
+  toTableId: z.string().min(1),
+});
 
 const router = Router();
 
@@ -174,6 +177,55 @@ router.post("/:id/checkout", validate(checkoutSchema), async (req, res) => {
   for (const o of updated) emitToRestaurant(req.user.restaurantId, "order:updated", o);
 
   res.json({ count: orders.length, total: billTotal, discount: disc, net });
+});
+
+// Move a table's open orders to another table. Covers two real cases:
+//   - customer changes table  -> destination is empty
+//   - customers mix tables     -> destination already has orders (bills combine)
+router.post("/:id/move", validate(moveSchema), async (req, res) => {
+  const { id } = req.params;
+  const { toTableId } = req.body;
+  if (id === toTableId) return res.status(400).json({ error: "Pick a different table" });
+
+  const [from, to] = await Promise.all([
+    prisma.table.findFirst({ where: { id, restaurantId: req.user.restaurantId } }),
+    prisma.table.findFirst({ where: { id: toTableId, restaurantId: req.user.restaurantId } }),
+  ]);
+  if (!from || !to) return res.status(404).json({ error: "Table not found" });
+
+  // Only unpaid, still-open orders move (paid ones are already closed).
+  const orders = await prisma.order.findMany({
+    where: { tableId: id, status: { in: ACTIVE }, payments: { none: {} } },
+    select: { id: true },
+  });
+  if (orders.length === 0) {
+    return res.status(400).json({ error: "This table has no open orders to move" });
+  }
+  const orderIds = orders.map((o) => o.id);
+
+  await prisma.order.updateMany({ where: { id: { in: orderIds } }, data: { tableId: toTableId } });
+
+  // The customers left the old table, so clear any calls still waiting there.
+  const calls = await prisma.serviceRequest.findMany({
+    where: { tableId: id, handled: false },
+    select: { id: true },
+  });
+  if (calls.length > 0) {
+    await prisma.serviceRequest.updateMany({
+      where: { id: { in: calls.map((c) => c.id) } },
+      data: { handled: true },
+    });
+    for (const c of calls) emitToRestaurant(req.user.restaurantId, "service:handled", { id: c.id });
+  }
+
+  // Refresh every live screen with the moved orders (now on the new table).
+  const moved = await prisma.order.findMany({
+    where: { id: { in: orderIds } },
+    include: { items: { include: { menuItem: true } }, table: true, payments: true },
+  });
+  for (const o of moved) emitToRestaurant(req.user.restaurantId, "order:updated", o);
+
+  res.json({ count: moved.length, toTableId });
 });
 
 router.post("/", async (req, res) => {
