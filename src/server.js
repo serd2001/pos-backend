@@ -46,12 +46,17 @@ initSocket(httpServer, allowedOrigins);
 // file). Idempotent — runs on boot and does nothing if the column already
 // exists — so a deploy can add the column without a separate DB step.
 async function ensureColumns() {
-  try {
-    await prisma.$executeRawUnsafe(
-      'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "logoUrl" TEXT'
-    );
-  } catch (e) {
-    console.error("ensureColumns failed (continuing):", e.message);
+  const stmts = [
+    'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "logoUrl" TEXT',
+    'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "address" TEXT',
+    'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "phone" TEXT',
+  ];
+  for (const sql of stmts) {
+    try {
+      await prisma.$executeRawUnsafe(sql);
+    } catch (e) {
+      console.error("ensureColumns failed (continuing):", e.message);
+    }
   }
 }
 

@@ -42,6 +42,8 @@ model Restaurant {
   name      String
   bankQrUrl String?  // data URL / hosted URL of the bank transfer QR shown at checkout
   logoUrl   String?  // data URL / hosted URL of the restaurant's logo
+  address   String?  // shown on the printed receipt
+  phone     String?  // shown on the printed receipt
   createdAt DateTime @default(now())
 
   users           User[]

@@ -10,7 +10,10 @@ router.use(requireAuth);
 router.get("/", async (req, res) => {
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: req.user.restaurantId },
-    select: { id: true, name: true, bankQrUrl: true, logoUrl: true, createdAt: true },
+    select: {
+      id: true, name: true, bankQrUrl: true, logoUrl: true,
+      address: true, phone: true, createdAt: true,
+    },
   });
   if (!restaurant) return res.status(404).json({ error: "Restaurant not found" });
   res.json(restaurant);
@@ -18,16 +21,18 @@ router.get("/", async (req, res) => {
 
 // Update the restaurant profile. Only the fields sent are changed.
 router.patch("/", async (req, res) => {
-  const { name, bankQrUrl, logoUrl } = req.body;
+  const { name, bankQrUrl, logoUrl, address, phone } = req.body;
   const data = {};
   if (typeof name === "string" && name.trim()) data.name = name.trim();
   if (bankQrUrl !== undefined) data.bankQrUrl = bankQrUrl; // null clears it
   if (logoUrl !== undefined) data.logoUrl = logoUrl; // null clears it
+  if (address !== undefined) data.address = typeof address === "string" ? address.trim() || null : null;
+  if (phone !== undefined) data.phone = typeof phone === "string" ? phone.trim() || null : null;
 
   const restaurant = await prisma.restaurant.update({
     where: { id: req.user.restaurantId },
     data,
-    select: { id: true, name: true, bankQrUrl: true, logoUrl: true },
+    select: { id: true, name: true, bankQrUrl: true, logoUrl: true, address: true, phone: true },
   });
   res.json(restaurant);
 });
