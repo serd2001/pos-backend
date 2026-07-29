@@ -6,11 +6,11 @@ const router = Router();
 
 router.use(requireAuth);
 
-// The current user's restaurant (name + bank QR) for the Settings screen.
+// The current user's restaurant (name + bank QR + logo) for the Settings screen.
 router.get("/", async (req, res) => {
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: req.user.restaurantId },
-    select: { id: true, name: true, bankQrUrl: true, createdAt: true },
+    select: { id: true, name: true, bankQrUrl: true, logoUrl: true, createdAt: true },
   });
   if (!restaurant) return res.status(404).json({ error: "Restaurant not found" });
   res.json(restaurant);
@@ -18,15 +18,16 @@ router.get("/", async (req, res) => {
 
 // Update the restaurant profile. Only the fields sent are changed.
 router.patch("/", async (req, res) => {
-  const { name, bankQrUrl } = req.body;
+  const { name, bankQrUrl, logoUrl } = req.body;
   const data = {};
   if (typeof name === "string" && name.trim()) data.name = name.trim();
   if (bankQrUrl !== undefined) data.bankQrUrl = bankQrUrl; // null clears it
+  if (logoUrl !== undefined) data.logoUrl = logoUrl; // null clears it
 
   const restaurant = await prisma.restaurant.update({
     where: { id: req.user.restaurantId },
     data,
-    select: { id: true, name: true, bankQrUrl: true },
+    select: { id: true, name: true, bankQrUrl: true, logoUrl: true },
   });
   res.json(restaurant);
 });

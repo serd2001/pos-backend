@@ -41,6 +41,7 @@ model Restaurant {
   id        String   @id @default(cuid())
   name      String
   bankQrUrl String?  // data URL / hosted URL of the bank transfer QR shown at checkout
+  logoUrl   String?  // data URL / hosted URL of the restaurant's logo
   createdAt DateTime @default(now())
 
   users           User[]

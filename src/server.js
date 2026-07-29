@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 
+import { prisma } from "./prisma.js";
 import { initSocket } from "./socket.js";
 import authRoutes from "./routes/auth.js";
 import menuRoutes from "./routes/menu.js";
@@ -41,7 +42,22 @@ app.use("/api/users", userRoutes);
 const httpServer = createServer(app);
 initSocket(httpServer, allowedOrigins);
 
+// Safety net for columns added to the DB via `prisma db push` (no migration
+// file). Idempotent — runs on boot and does nothing if the column already
+// exists — so a deploy can add the column without a separate DB step.
+async function ensureColumns() {
+  try {
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "logoUrl" TEXT'
+    );
+  } catch (e) {
+    console.error("ensureColumns failed (continuing):", e.message);
+  }
+}
+
 const PORT = process.env.PORT || 4000;
-httpServer.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
+ensureColumns().finally(() => {
+  httpServer.listen(PORT, () => {
+    console.log(`Backend running on http://localhost:${PORT}`);
+  });
 });
