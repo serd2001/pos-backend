@@ -34,39 +34,58 @@ router.get("/summary", async (req, res) => {
   });
 
   let gross = 0;
+  let cost = 0; // cost of goods sold (menu item cost × qty)
   let discountTotal = 0;
   let itemsSold = 0;
-  const byItem = new Map(); // menuItemId -> { name, qty, revenue }
+  const byItem = new Map(); // menuItemId -> { name, qty, revenue, cost }
+  const byHour = Array.from({ length: 24 }, () => ({ revenue: 0, orders: 0 }));
 
   for (const order of orders) {
     discountTotal += order.discount || 0;
+    let orderGross = 0;
     for (const line of order.items) {
       const lineTotal = line.unitPrice * line.quantity;
+      const lineCost = (line.menuItem?.cost || 0) * line.quantity;
       gross += lineTotal;
+      cost += lineCost;
       itemsSold += line.quantity;
+      orderGross += lineTotal;
 
       const key = line.menuItemId;
       const name = line.menuItem?.name ?? "—";
-      const agg = byItem.get(key) ?? { name, qty: 0, revenue: 0 };
+      const agg = byItem.get(key) ?? { name, qty: 0, revenue: 0, cost: 0 };
       agg.qty += line.quantity;
       agg.revenue += lineTotal;
+      agg.cost += lineCost;
       byItem.set(key, agg);
     }
+    // Bucket the order's net sales into its hour of day (server local time).
+    const h = new Date(order.createdAt).getHours();
+    byHour[h].revenue += orderGross - (order.discount || 0);
+    byHour[h].orders += 1;
   }
 
   const revenue = gross - discountTotal; // net of discounts
+  const profit = revenue - cost;
   const orderCount = orders.length;
-  const topItems = [...byItem.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 8);
+  const topItems = [...byItem.values()]
+    .map((a) => ({ ...a, profit: a.revenue - a.cost }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 8);
 
   res.json({
     range,
     since,
     revenue,
+    cost,
+    profit,
+    margin: revenue ? Math.round((profit / revenue) * 100) : 0,
     discountTotal,
     orderCount,
     itemsSold,
     avgOrder: orderCount ? Math.round(revenue / orderCount) : 0,
     topItems,
+    byHour: byHour.map((b, hour) => ({ hour, revenue: b.revenue, orders: b.orders })),
   });
 });
 
