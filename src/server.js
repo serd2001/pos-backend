@@ -50,6 +50,7 @@ async function ensureColumns() {
     'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "logoUrl" TEXT',
     'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "address" TEXT',
     'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "phone" TEXT',
+    'ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "theme" TEXT',
   ];
   for (const sql of stmts) {
     try {

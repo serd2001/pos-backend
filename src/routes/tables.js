@@ -51,7 +51,7 @@ router.get("/public/:restaurantId/:tableId", async (req, res) => {
   const { restaurantId, tableId } = req.params;
   const table = await prisma.table.findFirst({
     where: { id: tableId, restaurantId },
-    include: { restaurant: { select: { name: true, bankQrUrl: true, logoUrl: true } } },
+    include: { restaurant: { select: { name: true, bankQrUrl: true, logoUrl: true, theme: true } } },
   });
   if (!table) return res.status(404).json({ error: "Table not found" });
   res.json({
@@ -59,6 +59,7 @@ router.get("/public/:restaurantId/:tableId", async (req, res) => {
     restaurantName: table.restaurant.name,
     bankQrUrl: table.restaurant.bankQrUrl,
     logoUrl: table.restaurant.logoUrl,
+    theme: table.restaurant.theme,
   });
 });
 

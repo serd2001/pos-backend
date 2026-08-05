@@ -44,6 +44,7 @@ model Restaurant {
   logoUrl   String?  // data URL / hosted URL of the restaurant's logo
   address   String?  // shown on the printed receipt
   phone     String?  // shown on the printed receipt
+  theme     String?  // accent color theme (also applied to the customer menu)
   createdAt DateTime @default(now())
 
   users           User[]
