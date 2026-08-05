@@ -72,11 +72,18 @@ async function buildOrder({ restaurantId, tableId, source, cart, note, discount 
     const item = menuItems.find((m) => m.id === line.menuItemId);
     if (!item) throw new Error("Menu item not found");
 
-    // Start with the base price, then add any chosen modifier prices.
-    let unitPrice = item.price;
+    // Price the chosen options: a "set" option (e.g. a size) replaces the base
+    // price, an "add" option adds on top. Prices come from the request but the
+    // base is the DB price, so a plain item can't be under-charged.
+    let base = item.price;
+    let add = 0;
     if (Array.isArray(line.selected)) {
-      for (const opt of line.selected) unitPrice += opt.price || 0;
+      for (const opt of line.selected) {
+        if (opt && opt.mode === "set") base = Math.max(0, Math.round(opt.price) || 0);
+        else add += Math.max(0, Math.round(opt?.price) || 0);
+      }
     }
+    const unitPrice = base + add;
 
     return {
       menuItemId: item.id,
